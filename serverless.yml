@@ -1,0 +1,27 @@
+# "org" ensures this Service is used with the correct Serverless Framework Access Key.
+org: meadow
+# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
+app: mashirotheater-backend
+# "service" is the name of this project. This will also be added to your AWS resource names.
+service: mashirotheater-backend
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, 'v1'}
+  region: ap-northeast-1
+  environment:
+    PERFORMANCES_TABLE_NAME: ${self:provider.stage}-performances
+    SCHEDULES_TABLE_NAME: ${self:provider.stage}-schedules
+    RESERVATIONS_TABLE_NAME: ${self:provider.stage}-reservations
+
+functions:
+  getPerformance:
+    handler: index.handler
+    name: ${self:provider.stage}GetPerformance
+    events:
+      - http:
+          path: performances/{performanceId}
+          method: get
+    environment:
+      STAGE: ${self:provider.stage}
