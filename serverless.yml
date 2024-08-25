@@ -1,27 +1,156 @@
-# "org" ensures this Service is used with the correct Serverless Framework Access Key.
 org: meadow
-# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
 app: mashirotheater-backend
-# "service" is the name of this project. This will also be added to your AWS resource names.
 service: mashirotheater-backend
 
 provider:
   name: aws
   runtime: nodejs20.x
-  stage: ${opt:stage, 'v1'}
+  stage: ${opt:stage, 'dev'}
   region: ap-northeast-1
+  role: arn:aws:iam::767397762854:role/ReservationSystemLambdaRole
+  profile: default
   environment:
-    PERFORMANCES_TABLE_NAME: ${self:provider.stage}-performances
-    SCHEDULES_TABLE_NAME: ${self:provider.stage}-schedules
-    RESERVATIONS_TABLE_NAME: ${self:provider.stage}-reservations
+    PERFORMANCES_TABLE_NAME: ${self:custom.tablePrefix}-performances
+    SCHEDULES_TABLE_NAME: ${self:custom.tablePrefix}-schedules
+    RESERVATIONS_TABLE_NAME: ${self:custom.tablePrefix}-reservations
+    SENDER_EMAIL: noreply@mail.mashirotheater.com
+    STAGE: ${self:provider.stage}
+    CONFIRMATION_URL: ${self:custom.confirmationUrl}
+    ALLOWED_ORIGINS: ${self:custom.allowedOrigins.${self:provider.stage}}
+    TEMPLATE_BUCKET: ${self:provider.stage}-mashirotheater-templates
+    FRONTEND_URL: ${self:custom.frontendUrl.${self:provider.stage}}
+
+custom:
+  tablePrefix: ${self:provider.stage}
+  apiDomain:
+    dev: apidev.mashirotheater.com
+    prod: api.mashirotheater.com
+  confirmationUrl: https://${self:custom.apiDomain.${self:provider.stage}}/v1/confirm-reservation
+  allowedOrigins:
+    dev: http://localhost:3000,https://test.mashirotheater.com
+    prod: https://mashirotheater.com
+  templateBucket: ${self:provider.stage}-mashirotheater-templates
+  frontendUrl:
+    dev: https://test.mashirotheater.com
+    prod: https://mashirotheater.com
+  customDomain:
+    domainName: ${self:custom.apiDomain.${self:provider.stage}}
+    basePath: "v1"
+    certificateName: "mashirotheater.com"
+    stage: ${self:provider.stage}
+    createRoute53Record: true
+    endpointType: "regional"
+    securityPolicy: tls_1_2
 
 functions:
   getPerformance:
-    handler: index.handler
+    handler: src/getPerformance.handler
     name: ${self:provider.stage}GetPerformance
     events:
       - http:
           path: performances/{performanceId}
           method: get
-    environment:
-      STAGE: ${self:provider.stage}
+          cors: true
+
+  createReservation:
+    handler: src/createReservation.handler
+    name: ${self:provider.stage}CreateReservation
+    events:
+      - http:
+          path: reservations
+          method: post
+          cors: true
+
+  confirmReservation:
+    handler: src/confirmReservation.handler
+    name: ${self:provider.stage}ConfirmReservation
+    events:
+      - http:
+          path: confirm-reservation
+          method: get
+          cors: true
+
+  checkExpiredReservations:
+    handler: src/checkExpiredReservations.handler
+    name: ${self:provider.stage}CheckExpiredReservations
+    events:
+      - schedule: rate(5 minutes)
+
+  cancelReservation:
+    handler: src/cancelReservation.handler
+    name: ${self:provider.stage}CancelReservation
+    events:
+      - http:
+          path: cancel-reservation
+          method: post
+          cors: true
+
+resources:
+  Resources:
+    PerformancesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.PERFORMANCES_TABLE_NAME}
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+    SchedulesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.SCHEDULES_TABLE_NAME}
+        AttributeDefinitions:
+          - AttributeName: performanceId
+            AttributeType: S
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: performanceId
+            KeyType: HASH
+          - AttributeName: id
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+
+    ReservationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.RESERVATIONS_TABLE_NAME}
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: performanceId
+            AttributeType: S
+          - AttributeName: scheduleId
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: GSI1
+            KeySchema:
+              - AttributeName: performanceId
+                KeyType: HASH
+              - AttributeName: scheduleId
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: GSI2
+            KeySchema:
+              - AttributeName: email
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        BillingMode: PAY_PER_REQUEST
+
+plugins:
+  - serverless-domain-manager

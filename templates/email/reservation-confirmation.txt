@@ -12,6 +12,7 @@
 【ご予約内容】
 {{performanceTitle}}
 日時 : {{performanceDateTime}}
+代表者名 : {{name}}
 席数 : {{reservedSeats}}
 
 ----------------------------------------------------------------

@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const s3 = new AWS.S3();
-const BUCKET_NAME = process.env.TEMPLATE_BUCKET;
+const BUCKET_NAME = `${process.env.ENV}-mashirotheater-templates`;
 
 async function uploadTemplate(fileName) {
   const filePath = path.join(__dirname, '..', 'templates', 'email', fileName);
