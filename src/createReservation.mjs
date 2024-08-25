@@ -10,6 +10,7 @@ import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { createHash } from "crypto";
+import { sendNotification } from "./utils/notification.js";
 
 const client = new DynamoDBClient({});
 const dynamodb = DynamoDBDocumentClient.from(client);
@@ -161,6 +162,12 @@ export const handler = async (event) => {
       reservedSeats
     );
 
+    await sendNotification(
+      `仮予約作成: ID ${reservationId}, 公演 ${performanceId}, スケジュール ${scheduleId}, 名前 ${name}, 人数 ${reservedSeats}, 備考 ${notes}`,
+      "INFO",
+      "LOW",
+      "createReservation"
+    );
     return createResponse(
       200,
       {
@@ -172,6 +179,12 @@ export const handler = async (event) => {
     );
   } catch (error) {
     console.error("Error:", error);
+    await sendNotification(
+      `仮予約作成エラー: ${error.message}`,
+      "ERROR",
+      "HIGH",
+      "createReservation"
+    );
     return createErrorResponse(500, "E999", "Internal server error", origin);
   }
 };

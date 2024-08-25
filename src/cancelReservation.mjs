@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { createHash } from "crypto";
+import { sendNotification } from "./utils/notification.js";
 
 const client = new DynamoDBClient({});
 const dynamodb = DynamoDBDocumentClient.from(client);
@@ -64,9 +65,21 @@ export const handler = async (event) => {
     }
 
     await updateReservationStatus(id, "canceled");
+    await sendNotification(
+      `予約キャンセル: ID ${id}`,
+      "INFO",
+      "LOW",
+      "cancelReservation"
+    );
     return createResponse(200, { message: "SUCCESS" }, origin);
   } catch (error) {
     console.error("Error:", error);
+    await sendNotification(
+      `予約キャンセルエラー: ${error.message}`,
+      "ERROR",
+      "HIGH",
+      "cancelReservation"
+    );
     return createErrorResponse("E999", origin);
   }
 };

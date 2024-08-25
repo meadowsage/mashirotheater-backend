@@ -1,5 +1,10 @@
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  ScanCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
+import { sendNotification } from "./utils/notification.js";
 
 const client = new DynamoDBClient({});
 const dynamodb = DynamoDBDocumentClient.from(client);
@@ -14,32 +19,48 @@ export const handler = async (event) => {
     const expiredReservations = await getExpiredReservations();
     await Promise.all(expiredReservations.map(updateReservationToExpired));
 
+    // await sendNotification(
+    //   `失効チェック完了`,
+    //   "INFO",
+    //   "LOW",
+    //   "checkExpiredReservations"
+    // );
     return {
       statusCode: 200,
-      body: JSON.stringify({ message: `${expiredReservations.length} reservations marked as expired` })
+      body: JSON.stringify({
+        message: `${expiredReservations.length} reservations marked as expired`,
+      }),
     };
   } catch (error) {
     console.error("Error:", error);
+    await sendNotification(
+      `失効チェックエラー: ${error.message}`,
+      "ERROR",
+      "HIGH",
+      "checkExpiredReservations"
+    );
     return {
       statusCode: 500,
-      body: JSON.stringify({ message: "Internal server error" })
+      body: JSON.stringify({ message: "Internal server error" }),
     };
   }
 };
 
 async function getExpiredReservations() {
-  const expirationTime = new Date(Date.now() - RESERVATION_EXPIRATION_HOURS * 60 * 60 * 1000).toISOString();
-  
+  const expirationTime = new Date(
+    Date.now() - RESERVATION_EXPIRATION_HOURS * 60 * 60 * 1000
+  ).toISOString();
+
   const command = new ScanCommand({
     TableName: RESERVATIONS_TABLE_NAME,
     FilterExpression: "#status = :status AND createdAt < :expirationTime",
     ExpressionAttributeNames: {
-      "#status": "status"
+      "#status": "status",
     },
     ExpressionAttributeValues: {
       ":status": "pending",
-      ":expirationTime": expirationTime
-    }
+      ":expirationTime": expirationTime,
+    },
   });
 
   const result = await dynamodb.send(command);
@@ -52,12 +73,12 @@ async function updateReservationToExpired(reservation) {
     Key: { id: reservation.id },
     UpdateExpression: "SET #status = :status, updatedAt = :updatedAt",
     ExpressionAttributeNames: {
-      "#status": "status"
+      "#status": "status",
     },
     ExpressionAttributeValues: {
       ":status": "expired",
-      ":updatedAt": new Date().toISOString()
-    }
+      ":updatedAt": new Date().toISOString(),
+    },
   });
 
   await dynamodb.send(command);

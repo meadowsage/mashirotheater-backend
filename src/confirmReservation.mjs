@@ -10,6 +10,7 @@ import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { createHash } from "crypto";
+import { sendNotification } from "./utils/notification.js";
 
 const client = new DynamoDBClient({});
 const dynamodb = DynamoDBDocumentClient.from(client);
@@ -87,8 +88,20 @@ export const handler = async (event) => {
     // 確認メールの送信
     await sendConfirmationEmail(reservation, performanceDetails);
 
+    await sendNotification(
+      `予約確定: ID ${id}`,
+      "INFO",
+      "LOW",
+      "confirmReservation"
+    );
     return redirectToFrontend("success", reservation.performanceId);
   } catch (error) {
+    await sendNotification(
+      `予約確定エラー: ${error.message}`,
+      "ERROR",
+      "HIGH",
+      "confirmReservation"
+    );
     console.error("Error:", error);
     return redirectToFrontend("error", null);
   }

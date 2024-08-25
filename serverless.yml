@@ -19,6 +19,7 @@ provider:
     ALLOWED_ORIGINS: ${self:custom.allowedOrigins.${self:provider.stage}}
     TEMPLATE_BUCKET: ${self:provider.stage}-mashirotheater-templates
     FRONTEND_URL: ${self:custom.frontendUrl.${self:provider.stage}}
+    SYSTEM_NOTIFICATIONS_TOPIC_ARN: ${self:custom.systemNotificationsTopicArn}
 
 custom:
   tablePrefix: ${self:provider.stage}
@@ -41,6 +42,14 @@ custom:
     createRoute53Record: true
     endpointType: "regional"
     securityPolicy: tls_1_2
+  systemNotificationsTopicArn:
+    Fn::GetAtt: [SystemNotificationsTopic, TopicArn]
+  discordWebhook:
+    dev: ${ssm:/dev/discord/webhook_url}
+    prod: ${ssm:/prod/discord/webhook_url}
+  discordMentionId:
+    dev: ${ssm:/dev/discord/mention_id}
+    prod: ${ssm:/prod/discord/mention_id}
 
 functions:
   getPerformance:
@@ -85,6 +94,22 @@ functions:
           method: post
           cors: true
 
+  sendReminderEmails:
+    handler: src/sendReminderEmails.handler
+    name: ${self:provider.stage}SendReminderEmails
+    events:
+      - schedule: rate(1 hour)
+
+  discordNotifier:
+    handler: src/discordNotifier.handler
+    events:
+      - sns:
+          arn: ${self:custom.systemNotificationsTopicArn}
+          topicName: ${self:provider.stage}-system-notifications-topic
+    environment:
+      DISCORD_WEBHOOK_URL: ${self:custom.discordWebhook.${self:provider.stage}}
+      DISCORD_MENTION_ID: ${self:custom.discordMentionId.${self:provider.stage}}
+
 resources:
   Resources:
     PerformancesTable:
@@ -108,12 +133,21 @@ resources:
             AttributeType: S
           - AttributeName: id
             AttributeType: S
+          - AttributeName: date
+            AttributeType: S
         KeySchema:
           - AttributeName: performanceId
             KeyType: HASH
           - AttributeName: id
             KeyType: RANGE
         BillingMode: PAY_PER_REQUEST
+        GlobalSecondaryIndexes:
+          - IndexName: DateIndex
+            KeySchema:
+              - AttributeName: date
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
 
     ReservationsTable:
       Type: AWS::DynamoDB::Table
@@ -151,6 +185,11 @@ resources:
             Projection:
               ProjectionType: ALL
         BillingMode: PAY_PER_REQUEST
+
+    SystemNotificationsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:provider.stage}-system-notifications-topic
 
 plugins:
   - serverless-domain-manager
