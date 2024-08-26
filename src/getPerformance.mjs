@@ -19,6 +19,19 @@ const corsHeaders = {
     "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
 };
 
+const TIME_ZONE = "Asia/Tokyo";
+
+function getJSTDate(date = new Date()) {
+  return new Date(date.toLocaleString("en-US", { timeZone: TIME_ZONE }));
+}
+
+function isWithinOneHourBeforeStart(schedule) {
+  const now = getJSTDate();
+  const performanceTime = new Date(`${schedule.date}T${schedule.time}`);
+  const oneHourBefore = new Date(performanceTime.getTime() - 60 * 60 * 1000);
+  return now < oneHourBefore;
+}
+
 const createResponse = (statusCode, body, origin) => {
   return {
     statusCode,
@@ -57,8 +70,10 @@ export const handler = async (event) => {
     }
 
     // 予約開始時間のチェック
-    const now = new Date();
-    const reservationStartTime = new Date(performance.reservationStartTime);
+    const now = getJSTDate();
+    const reservationStartTime = getJSTDate(
+      new Date(performance.reservationStartTime)
+    );
     if (now < reservationStartTime) {
       return createResponse(
         200,
@@ -71,12 +86,27 @@ export const handler = async (event) => {
         origin
       );
     }
-
     const schedules = await getSchedules(performanceId);
     const schedulesWithAvailableSeats = await Promise.all(
       schedules.map(getAvailableSeats)
     );
-    const formattedSchedules = schedulesWithAvailableSeats.map(formatSchedule);
+    const formattedSchedules = schedulesWithAvailableSeats
+      .filter(isWithinOneHourBeforeStart)
+      .map(formatSchedule);
+
+    if (formattedSchedules.length === 0) {
+      return createResponse(
+        200,
+        {
+          id: performance.id,
+          title: performance.title,
+          reservationStatus: "closed",
+          message:
+            "All performances are within one hour of start time or have already begun.",
+        },
+        origin
+      );
+    }
 
     return createResponse(
       200,
@@ -144,6 +174,7 @@ async function getAvailableSeats(schedule) {
 }
 
 function formatSchedule(schedule) {
+  // DBに格納されている日時はすでに日本時間なので、getJSTDate()は使用しない
   const date = new Date(`${schedule.date}T${schedule.time}`);
   return {
     id: schedule.id,

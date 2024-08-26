@@ -20,6 +20,8 @@ provider:
     TEMPLATE_BUCKET: ${self:provider.stage}-mashirotheater-templates
     FRONTEND_URL: ${self:custom.frontendUrl.${self:provider.stage}}
     SYSTEM_NOTIFICATIONS_TOPIC_ARN: ${self:custom.systemNotificationsTopicArn}
+    SENDING_START_HOUR: ${self:custom.sendingHours.${opt:stage, 'dev'}.start}
+    SENDING_END_HOUR: ${self:custom.sendingHours.${opt:stage, 'dev'}.end}
 
 custom:
   tablePrefix: ${self:provider.stage}
@@ -50,6 +52,13 @@ custom:
   discordMentionId:
     dev: ${ssm:/dev/discord/mention_id}
     prod: ${ssm:/prod/discord/mention_id}
+  sendingHours:
+    dev:
+      start: "0"
+      end: "24"
+    prod:
+      start: "8"
+      end: "22"
 
 functions:
   getPerformance:
@@ -97,6 +106,12 @@ functions:
   sendReminderEmails:
     handler: src/sendReminderEmails.handler
     name: ${self:provider.stage}SendReminderEmails
+    events:
+      - schedule: rate(1 hour)
+
+  sendSurveyEmails:
+    handler: src/sendSurveyEmails.handler
+    name: ${self:provider.stage}SendSurveyEmails
     events:
       - schedule: rate(1 hour)
 
