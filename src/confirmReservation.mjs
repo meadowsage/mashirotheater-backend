@@ -2,7 +2,6 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
-  UpdateCommand,
   QueryCommand,
   TransactWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
@@ -25,7 +24,6 @@ const STAGE = process.env.STAGE;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const SENDER_EMAIL = process.env.SENDER_EMAIL;
 const TEMPLATE_BUCKET = process.env.TEMPLATE_BUCKET;
-const RESERVATION_EXPIRATION_HOURS = 1; // 予約の有効期限（時間）
 
 async function getSecretKey() {
   const parameterName = `/${STAGE}/mashirotheater/reservation/secret-key`;
@@ -49,12 +47,8 @@ export const handler = async (event) => {
       return redirectToFrontend("not-found");
     }
 
-    // 有効期限のチェック
-    const expirationTime = new Date(
-      Date.now() - RESERVATION_EXPIRATION_HOURS * 60 * 60 * 1000
-    ).toISOString();
-    if (reservation.createdAt < expirationTime) {
-      await updateReservationStatus(id, "expired");
+    // 有効期限切れのチェック
+    if (reservation.status === "expired") {
       return redirectToFrontend("expired", reservation.performanceId);
     }
 
@@ -180,23 +174,6 @@ async function getAvailableSeats(performanceId, scheduleId) {
   );
 
   return totalSeats - reservedSeats;
-}
-
-async function updateReservationStatus(reservationId, status) {
-  const command = new UpdateCommand({
-    TableName: RESERVATIONS_TABLE_NAME,
-    Key: { id: reservationId },
-    UpdateExpression: "SET #status = :status, updatedAt = :updatedAt",
-    ExpressionAttributeNames: {
-      "#status": "status",
-    },
-    ExpressionAttributeValues: {
-      ":status": status,
-      ":updatedAt": new Date().toISOString(),
-    },
-  });
-
-  await dynamodb.send(command);
 }
 
 async function getReservation(reservationId) {

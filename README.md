@@ -14,7 +14,7 @@ serverless deploy --stage dev --verbose
 ```
 
 ```
-serverless deploy --stage dev --verbose
+serverless deploy --stage prod --verbose
 ```
 
 ```

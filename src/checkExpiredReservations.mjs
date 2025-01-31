@@ -19,12 +19,15 @@ export const handler = async (event) => {
     const expiredReservations = await getExpiredReservations();
     await Promise.all(expiredReservations.map(updateReservationToExpired));
 
-    // await sendNotification(
-    //   `失効チェック完了`,
-    //   "INFO",
-    //   "LOW",
-    //   "checkExpiredReservations"
-    // );
+    if (expiredReservations.length > 0) {
+      await sendNotification(
+        `失効チェック: ${expiredReservations.length}件の予約が失効しました`,
+        "INFO",
+        "LOW",
+        "checkExpiredReservations"
+      );
+    }
+
     return {
       statusCode: 200,
       body: JSON.stringify({
@@ -47,6 +50,7 @@ export const handler = async (event) => {
 };
 
 async function getExpiredReservations() {
+  // 期限切れ基準時刻 (now - 1時間)
   const expirationTime = new Date(
     Date.now() - RESERVATION_EXPIRATION_HOURS * 60 * 60 * 1000
   ).toISOString();
@@ -71,16 +75,29 @@ async function updateReservationToExpired(reservation) {
   const command = new UpdateCommand({
     TableName: RESERVATIONS_TABLE_NAME,
     Key: { id: reservation.id },
-    UpdateExpression: "SET #status = :status, updatedAt = :updatedAt",
+    UpdateExpression: "SET #status = :expired, updatedAt = :updatedAt",
+    ConditionExpression: "#status = :pending", // すでに変更されていたら上書きしない
     ExpressionAttributeNames: {
       "#status": "status",
     },
     ExpressionAttributeValues: {
-      ":status": "expired",
+      ":pending": "pending",
+      ":expired": "expired",
       ":updatedAt": new Date().toISOString(),
     },
   });
 
-  await dynamodb.send(command);
-  console.log("expired: " + reservation.id);
+  try {
+    await dynamodb.send(command);
+    console.log("expired: " + reservation.id);
+  } catch (error) {
+    // もし #status != pending（たとえば confirmed になった）なら ConditionalCheckFailedException が投げられる
+    if (error.name === "ConditionalCheckFailedException") {
+      console.log(`skip expiring: ${reservation.id} (already changed)`);
+      // ここでは特に再スローせず、単にスキップ扱いにする
+    } else {
+      throw error;
+      z;
+    }
+  }
 }
