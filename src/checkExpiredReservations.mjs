@@ -97,7 +97,6 @@ async function updateReservationToExpired(reservation) {
       // ここでは特に再スローせず、単にスキップ扱いにする
     } else {
       throw error;
-      z;
     }
   }
 }
