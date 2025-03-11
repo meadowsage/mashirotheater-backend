@@ -102,7 +102,8 @@ export const handler = async (event) => {
     const reservationCheck = await checkExistingReservation(
       performanceId,
       scheduleId,
-      email
+      email,
+      performance.maxReservations
     );
     if (!reservationCheck.allowed) {
       let errorCode, errorMessage;
@@ -360,7 +361,12 @@ function streamToString(stream) {
   });
 }
 
-async function checkExistingReservation(performanceId, scheduleId, email) {
+async function checkExistingReservation(
+  performanceId,
+  scheduleId,
+  email,
+  maxReservations
+) {
   // 同一の日程（ScheduleId）に対する予約をチェック
   const scheduleCommand = new QueryCommand({
     TableName: RESERVATIONS_TABLE_NAME,
@@ -408,7 +414,11 @@ async function checkExistingReservation(performanceId, scheduleId, email) {
     return { allowed: false, reason: "SAME_SCHEDULE" };
   }
 
-  if (samePerformanceReservations >= 2) {
+  if (
+    typeof maxReservations === "number" &&
+    maxReservations > 0 &&
+    samePerformanceReservations >= maxReservations
+  ) {
     return { allowed: false, reason: "MAX_PERFORMANCE_REACHED" };
   }
 

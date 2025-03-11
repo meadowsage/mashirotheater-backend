@@ -108,6 +108,10 @@ export const handler = async (event) => {
       );
     }
 
+    if (!performance.maxReservations) {
+      performance.maxReservations = 0;
+    }
+
     return createResponse(
       200,
       {
@@ -115,6 +119,7 @@ export const handler = async (event) => {
         title: performance.title,
         reservationStatus: "open",
         schedules: formattedSchedules,
+        maxReservations: performance.maxReservations,
       },
       origin
     );
