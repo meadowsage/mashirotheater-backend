@@ -13,6 +13,7 @@ provider:
     PERFORMANCES_TABLE_NAME: ${self:custom.tablePrefix}-performances
     SCHEDULES_TABLE_NAME: ${self:custom.tablePrefix}-schedules
     RESERVATIONS_TABLE_NAME: ${self:custom.tablePrefix}-reservations
+    ATTENDEES_TABLE_NAME: ${self:custom.tablePrefix}-attendees
     SENDER_EMAIL: noreply@mail.mashirotheater.com
     STAGE: ${self:provider.stage}
     CONFIRMATION_URL: ${self:custom.confirmationUrl}
@@ -125,6 +126,18 @@ functions:
       DISCORD_WEBHOOK_URL: ${self:custom.discordWebhook.${self:provider.stage}}
       DISCORD_MENTION_ID: ${self:custom.discordMentionId.${self:provider.stage}}
 
+  getPerformanceDetailsAdmin:
+    handler: src/admin/getPerformanceDetailsAdmin.handler
+    name: ${self:provider.stage}GetPerformanceDetailsAdmin
+    events:
+      - http:
+          path: admin/performances/{performanceId}
+          method: get
+          request:
+            parameters:
+              paths:
+                performanceId: true
+
 resources:
   Resources:
     PerformancesTable:
@@ -199,6 +212,18 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
+        BillingMode: PAY_PER_REQUEST
+
+    AttendeesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.ATTENDEES_TABLE_NAME}
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
         BillingMode: PAY_PER_REQUEST
 
     SystemNotificationsTopic:
