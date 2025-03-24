@@ -4,11 +4,13 @@ import {
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
+  BatchWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { createHash } from "crypto";
+import { v4 as uuidv4 } from "uuid"; // 追加: UUID生成でお連れ様レコードIDを作る
 import { sendNotification } from "./utils/notification.js";
 
 const client = new DynamoDBClient({});
@@ -20,6 +22,7 @@ const s3Client = new S3Client({ region: process.env.AWS_REGION });
 const RESERVATIONS_TABLE_NAME = process.env.RESERVATIONS_TABLE_NAME;
 const PERFORMANCES_TABLE_NAME = process.env.PERFORMANCES_TABLE_NAME;
 const SCHEDULES_TABLE_NAME = process.env.SCHEDULES_TABLE_NAME;
+const ATTENDEES_TABLE_NAME = process.env.ATTENDEES_TABLE_NAME; // ← 追加: Attendeesテーブル
 const STAGE = process.env.STAGE;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const SENDER_EMAIL = process.env.SENDER_EMAIL;
@@ -72,6 +75,9 @@ export const handler = async (event) => {
     if (!confirmationResult.success) {
       return redirectToFrontend("no-seats", reservation.performanceId);
     }
+
+    // Attendees 作成（重複チェック込み）
+    await createAttendeesIfNotExists(reservation);
 
     // 予約詳細の取得
     const performanceDetails = await getPerformanceDetails(
@@ -141,6 +147,100 @@ async function confirmReservation(reservation) {
   }
 }
 
+/**
+ * 予約が confirmed になった後に Attendees レコードを作成する。
+ * 重複防止のため、reservationId で Attendees を検索し、既にあればスキップ。
+ */
+async function createAttendeesIfNotExists(reservation) {
+  const { id: reservationId } = reservation;
+
+  // すでに Attendees があるかチェック (GSI: reservationId)
+  const alreadyExists = await hasAnyAttendees(reservationId);
+  if (alreadyExists) {
+    console.log(
+      `Attendees already exist for reservation ${reservationId}. Skipping.`
+    );
+    return;
+  }
+
+  // 予約者を occupant i=0 / お連れ様 i>0 として、notes は i=0 のみコピー
+  const attendeeRecords = buildAttendeeRecords(reservation);
+  // 作成
+  await putAttendeesBatch(attendeeRecords);
+  console.log(`Attendees created for reservation ${reservationId}`);
+}
+
+async function hasAnyAttendees(reservationId) {
+  // GSI "ReservationIdIndex" を想定
+  const queryCmd = new QueryCommand({
+    TableName: ATTENDEES_TABLE_NAME,
+    IndexName: "ReservationIdIndex",
+    KeyConditionExpression: "reservationId = :rid",
+    ExpressionAttributeValues: {
+      ":rid": reservationId,
+    },
+    Limit: 1,
+  });
+  const res = await dynamodb.send(queryCmd);
+  return (res.Items || []).length > 0;
+}
+
+function buildAttendeeRecords(reservation) {
+  const {
+    id: reservationId,
+    performanceId,
+    scheduleId,
+    name,
+    reservedSeats,
+    notes, // Reservationテーブルのnotes
+  } = reservation;
+
+  const now = new Date().toISOString();
+  const items = [];
+
+  for (let i = 0; i < reservedSeats; i++) {
+    const occupantName = i === 0 ? name : ` ${name} お連れ様`;
+    const occupantNotes = i === 0 ? notes || "" : ""; // お連れ様は空文字
+    items.push({
+      id: `ATT-${uuidv4()}`,
+      reservationId,
+      performanceId,
+      scheduleId,
+      name: occupantName,
+      checkedIn: false,
+      createdAt: now,
+      notes: occupantNotes,
+    });
+  }
+  return items;
+}
+
+/**
+ * Attendees レコードを一括 Put
+ * ※ reservedSeats が少なければ BatchWriteでもOK
+ */
+async function putAttendeesBatch(attendeeItems) {
+  if (!attendeeItems.length) return;
+
+  // BatchWrite は1リクエスト25件まで
+  const BATCH_SIZE = 25;
+  for (let i = 0; i < attendeeItems.length; i += BATCH_SIZE) {
+    const batch = attendeeItems.slice(i, i + BATCH_SIZE);
+    const requestItems = batch.map((item) => ({
+      PutRequest: {
+        Item: item,
+      },
+    }));
+
+    const command = new BatchWriteCommand({
+      RequestItems: {
+        [ATTENDEES_TABLE_NAME]: requestItems,
+      },
+    });
+    await dynamodb.send(command);
+  }
+}
+
 async function getAvailableSeats(performanceId, scheduleId) {
   // スケジュールの総座席数を取得
   const scheduleCommand = new GetCommand({
@@ -181,7 +281,6 @@ async function getReservation(reservationId) {
     TableName: RESERVATIONS_TABLE_NAME,
     Key: { id: reservationId },
   });
-
   const result = await dynamodb.send(command);
   return result.Item;
 }

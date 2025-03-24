@@ -135,6 +135,37 @@ functions:
           method: get
           cors: true
 
+  updatePerformanceAdmin:
+    handler: src/admin/updatePerformanceAdmin.handler
+    name: ${self:provider.stage}UpdatePerformanceAdmin
+    events:
+      - http:
+          path: admin/performances/{performanceId}
+          method: put
+          cors: true
+          request:
+            parameters:
+              paths:
+                performanceId: true
+
+  createAttendeesBatch:
+    handler: src/batch/createAttendeesBatch.handler
+    name: ${self:provider.stage}CreateAttendeesBatch
+
+  getAttendeesAdmin:
+    handler: src/admin/getAttendeesAdmin.handler
+    name: ${self:provider.stage}GetAttendeesAdmin
+    events:
+      - http:
+          path: admin/performances/{performanceId}/schedules/{scheduleId}/attendees
+          method: get
+          cors: true
+          request:
+            parameters:
+              paths:
+                performanceId: true
+                scheduleId: true
+
 resources:
   Resources:
     PerformancesTable:
@@ -218,9 +249,30 @@ resources:
         AttributeDefinitions:
           - AttributeName: id
             AttributeType: S
+          - AttributeName: reservationId
+            AttributeType: S
+          - AttributeName: performanceId
+            AttributeType: S
+          - AttributeName: scheduleId
+            AttributeType: S
         KeySchema:
           - AttributeName: id
             KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: "ReservationIdIndex"
+            KeySchema:
+              - AttributeName: reservationId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: "PerformanceIdScheduleIdIndex"
+            KeySchema:
+              - AttributeName: performanceId
+                KeyType: HASH
+              - AttributeName: scheduleId
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
         BillingMode: PAY_PER_REQUEST
 
     SystemNotificationsTopic:
