@@ -133,10 +133,7 @@ functions:
       - http:
           path: admin/performances/{performanceId}
           method: get
-          request:
-            parameters:
-              paths:
-                performanceId: true
+          cors: true
 
 resources:
   Resources:
