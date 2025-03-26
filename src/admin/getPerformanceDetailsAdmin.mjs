@@ -10,6 +10,7 @@ const dynamodb = DynamoDBDocumentClient.from(client);
 
 const PERFORMANCES_TABLE_NAME = process.env.PERFORMANCES_TABLE_NAME;
 const SCHEDULES_TABLE_NAME = process.env.SCHEDULES_TABLE_NAME;
+const RESERVATIONS_TABLE_NAME = process.env.RESERVATIONS_TABLE_NAME;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS.split(",");
 
 // CORS用のヘッダー
@@ -66,9 +67,22 @@ export const handler = async (event) => {
 
     // Schedules テーブルから全スケジュールを取得
     const schedules = await getSchedules(performanceId);
-    const formattedSchedules = schedules.map(formatSchedule);
 
-    // 万が一 null の項目があれば空文字 / 0 に置き換える例
+    // 各スケジュールについて、有効な予約数を取得しフィールドに追加
+    const schedulesWithActiveReservations = [];
+    for (const schedule of schedules) {
+      const activeCount = await getActiveReservationCount(
+        performanceId,
+        schedule.id
+      );
+      const formatted = formatSchedule(schedule);
+      schedulesWithActiveReservations.push({
+        ...formatted,
+        reservedSeats: activeCount,
+      });
+    }
+
+    // null の項目があれば空文字 / 0 に置き換え
     const safeReservationStartTime = performance.reservationStartTime || "";
     const safeMaxReservations =
       typeof performance.maxReservations === "number"
@@ -82,7 +96,7 @@ export const handler = async (event) => {
       title: safeTitle,
       reservationStartTime: safeReservationStartTime,
       maxReservations: safeMaxReservations,
-      schedules: formattedSchedules,
+      schedules: schedulesWithActiveReservations,
     };
 
     return createResponse(200, responseBody, origin);
@@ -92,7 +106,7 @@ export const handler = async (event) => {
   }
 };
 
-// 公演 (Performances テーブル) から1件取得
+/** 公演 (Performances テーブル) から1件取得 */
 async function getPerformance(performanceId) {
   const command = new GetCommand({
     TableName: PERFORMANCES_TABLE_NAME,
@@ -102,7 +116,7 @@ async function getPerformance(performanceId) {
   return result.Item;
 }
 
-// スケジュール一覧取得 (全件)
+/** スケジュール一覧取得 (全件) */
 async function getSchedules(performanceId) {
   const command = new QueryCommand({
     TableName: SCHEDULES_TABLE_NAME,
@@ -115,7 +129,37 @@ async function getSchedules(performanceId) {
   return result.Items || [];
 }
 
-// スケジュールをフォーマット
+/** 有効な予約数（仮予約含む）を取得 */
+async function getActiveReservationCount(performanceId, scheduleId) {
+  // Reservationsテーブルを Query し、status IN ('pending','confirmed') の reservedSeats を合計
+  // GSI1: partitionKey=performanceId, sortKey=scheduleId
+  const command = new QueryCommand({
+    TableName: RESERVATIONS_TABLE_NAME,
+    IndexName: "GSI1",
+    KeyConditionExpression: "performanceId = :pid AND scheduleId = :sid",
+    FilterExpression: "#st IN (:pending, :confirmed)",
+    ExpressionAttributeNames: {
+      "#st": "status",
+    },
+    ExpressionAttributeValues: {
+      ":pid": performanceId,
+      ":sid": scheduleId,
+      ":pending": "pending",
+      ":confirmed": "confirmed",
+    },
+    ProjectionExpression: "reservedSeats",
+  });
+
+  const result = await dynamodb.send(command);
+  const items = result.Items || [];
+  let total = 0;
+  for (const r of items) {
+    total += r.reservedSeats;
+  }
+  return total;
+}
+
+/** スケジュールをフォーマット */
 function formatSchedule(schedule) {
   // 好みに応じて日付フォーマット
   const dateObj = new Date(`${schedule.date}T${schedule.time}`);
@@ -125,11 +169,10 @@ function formatSchedule(schedule) {
     time: formatTime(dateObj),
     totalSeats: schedule.totalSeats || 0,
     entryUrl: schedule.entryUrl || "",
-    // その他必要なカラムがあれば追加
   };
 }
 
-// YYYY-MM-DD
+/** YYYY-MM-DD */
 function formatDate(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -137,7 +180,7 @@ function formatDate(date) {
   return `${y}-${m}-${d}`;
 }
 
-// HH:mm
+/** HH:mm */
 function formatTime(date) {
   const hh = String(date.getHours()).padStart(2, "0");
   const mm = String(date.getMinutes()).padStart(2, "0");

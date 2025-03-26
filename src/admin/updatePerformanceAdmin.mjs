@@ -22,6 +22,7 @@ const corsHeaders = {
     "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
 };
 
+/** レスポンス生成ユーティリティ */
 function createResponse(statusCode, body, origin) {
   return {
     statusCode,
@@ -36,6 +37,7 @@ function createResponse(statusCode, body, origin) {
 export const handler = async (event) => {
   console.log("Received event:", JSON.stringify(event, null, 2));
 
+  // CORS用にリクエスト元のOriginを判定
   const origin = ALLOWED_ORIGINS.includes(event.headers.origin)
     ? event.headers.origin
     : ALLOWED_ORIGINS[0];
@@ -45,19 +47,20 @@ export const handler = async (event) => {
     const queryParams = event.queryStringParameters || {};
     const adminUuid = queryParams.uuid;
 
+    // 必須パラメータチェック
     if (!performanceId || !adminUuid) {
       return createResponse(
         400,
-        { errorCode: "E002", message: "Missing performanceId or uuid" },
+        { errorCode: "E001", message: "Missing performanceId or uuid" },
         origin
       );
     }
 
-    // リクエストボディをパース
+    // リクエストボディパース
     const body = JSON.parse(event.body || "{}");
     const { reservationStartTime, maxReservations, schedules } = body;
 
-    // 1. Performances テーブルから公演情報を取得し、adminUuid をチェック
+    // 1. Performancesテーブルから公演を取得
     const performanceItem = await getPerformance(performanceId);
     if (!performanceItem) {
       return createResponse(
@@ -66,35 +69,48 @@ export const handler = async (event) => {
         origin
       );
     }
+    // adminUuid認証
     if (performanceItem.adminUuid !== adminUuid) {
       return createResponse(403, { message: "Forbidden" }, origin);
     }
 
-    // 2. Schedules 一覧を取得し、後のバリデーションに使う
+    // 2. Schedules一覧を取得し、あとでチェックに使う
     const existingSchedules = await getSchedules(performanceId);
     const scheduleCount = existingSchedules.length;
 
-    // 3. maxReservations バリデーション (0 <= maxReservations <= scheduleCount)
+    // 3. maxReservationsバリデーション
     if (maxReservations !== undefined) {
       if (
         typeof maxReservations !== "number" ||
         maxReservations < 0 ||
         maxReservations > scheduleCount
       ) {
+        // 0～scheduleCountの範囲外
         return createResponse(
           400,
           { errorCode: "E101", message: "maxReservations out of range" },
           origin
         );
       }
+      // 小さくできない（現状より下回る場合はエラー）
+      if (
+        typeof performanceItem.maxReservations === "number" &&
+        maxReservations < performanceItem.maxReservations
+      ) {
+        return createResponse(
+          400,
+          {
+            errorCode: "E106",
+            message: `Cannot decrease maxReservations from ${performanceItem.maxReservations} to ${maxReservations}`,
+          },
+          origin
+        );
+      }
     }
 
-    // 4. reservationStartTime のバリデーション (タイムゾーン込み)
-    //    例: "2025-03-08T21:00:00+09:00"
+    // 4. reservationStartTime (ISO8601) バリデーション
     if (reservationStartTime !== undefined) {
-      // 簡易的に Date(parseable) かどうかチェック
       const parsed = new Date(reservationStartTime);
-      // isNaN(parsed.getTime()) → パース失敗
       if (isNaN(parsed.getTime())) {
         return createResponse(
           400,
@@ -106,21 +122,20 @@ export const handler = async (event) => {
           origin
         );
       }
-      // パース可能ならOK → 実際には文字列を変換せず、そのまま保存
     }
 
-    // 5. schedules の更新差分をチェック
+    // 5. schedules 更新差分をチェック
     if (Array.isArray(schedules)) {
       for (const schUpdate of schedules) {
         const { id, totalSeats, entryUrl } = schUpdate;
 
-        // スケジュールが存在するか
+        // スケジュール存在確認
         const existing = existingSchedules.find((s) => s.id === id);
         if (!existing) {
           return createResponse(
             400,
             {
-              errorCode: "E002",
+              errorCode: "E003",
               message: `Schedule ${id} not found in performance ${performanceId}`,
             },
             origin
@@ -136,6 +151,7 @@ export const handler = async (event) => {
               origin
             );
           }
+          // キャパ上限
           if (totalSeats > THEATER_CAPACITY) {
             return createResponse(
               400,
@@ -146,6 +162,18 @@ export const handler = async (event) => {
               origin
             );
           }
+          // 現状より下げられない
+          if (totalSeats < existing.totalSeats) {
+            return createResponse(
+              400,
+              {
+                errorCode: "E107",
+                message: `Cannot decrease totalSeats from ${existing.totalSeats} to ${totalSeats}`,
+              },
+              origin
+            );
+          }
+          // 予約席数以上
           const reserved = await getReservedSeats(performanceId, id, [
             "pending",
             "confirmed",
@@ -180,7 +208,7 @@ export const handler = async (event) => {
     }
 
     // 6. 更新ロジック
-    // 6-1. Performances テーブル (reservationStartTime, maxReservations)
+    // 6-1. Performances (reservationStartTime, maxReservations)
     if (reservationStartTime !== undefined || maxReservations !== undefined) {
       const updateExpressions = [];
       const attrNames = {};
@@ -189,7 +217,6 @@ export const handler = async (event) => {
       if (reservationStartTime !== undefined) {
         updateExpressions.push("#rst = :rst");
         attrNames["#rst"] = "reservationStartTime";
-        // 文字列をそのまま保存
         attrValues[":rst"] = reservationStartTime;
       }
       if (maxReservations !== undefined) {
@@ -211,7 +238,7 @@ export const handler = async (event) => {
       }
     }
 
-    // 6-2. Schedules テーブル (totalSeats, entryUrl)
+    // 6-2. Schedules (totalSeats, entryUrl)
     if (Array.isArray(schedules)) {
       for (const schUpdate of schedules) {
         const { id, totalSeats, entryUrl } = schUpdate;
@@ -260,7 +287,7 @@ export const handler = async (event) => {
   }
 };
 
-/** Performance取得 */
+/** 公演データを取得 */
 async function getPerformance(performanceId) {
   const cmd = new GetCommand({
     TableName: PERFORMANCES_TABLE_NAME,

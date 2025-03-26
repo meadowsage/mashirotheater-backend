@@ -151,6 +151,7 @@ functions:
   createAttendeesBatch:
     handler: src/batch/createAttendeesBatch.handler
     name: ${self:provider.stage}CreateAttendeesBatch
+    timeout: 30
 
   getAttendeesAdmin:
     handler: src/admin/getAttendeesAdmin.handler
@@ -165,6 +166,19 @@ functions:
               paths:
                 performanceId: true
                 scheduleId: true
+
+  updateCheckinAdmin:
+    handler: src/admin/updateCheckinAdmin.handler
+    name: ${self:provider.stage}UpdateCheckinAdmin
+    events:
+      - http:
+          path: admin/attendees/{attendeeId}
+          method: patch
+          cors: true
+          request:
+            parameters:
+              paths:
+                attendeeId: true
 
 resources:
   Resources:
