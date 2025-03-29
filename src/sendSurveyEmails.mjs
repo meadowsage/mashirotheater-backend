@@ -23,71 +23,73 @@ const TIME_ZONE = "Asia/Tokyo";
 const SENDING_START_HOUR = parseInt(process.env.SENDING_START_HOUR || "0", 10);
 const SENDING_END_HOUR = parseInt(process.env.SENDING_END_HOUR || "24", 10);
 
-function getJSTDate(date = new Date()) {
-  return new Date(date.toLocaleString("en-US", { timeZone: TIME_ZONE }));
-}
-
 function isWithinSendingHours() {
   const now = getJSTDate();
   const hour = now.getHours();
   return hour >= SENDING_START_HOUR && hour < SENDING_END_HOUR;
 }
 
+function getJSTDate(date = new Date()) {
+  return new Date(date.toLocaleString("en-US", { timeZone: TIME_ZONE }));
+}
+
 export const handler = async (event) => {
-  console.log("Starting sendReminderEmails function");
+  console.log("Starting sendSurveyEmails function");
 
   if (!isWithinSendingHours()) {
-    console.log(
-      `Outside of sending hours (${SENDING_START_HOUR}:00-${SENDING_END_HOUR}:00). Exiting.`
-    );
+    console.log("Outside of sending hours in production. Exiting.");
     return {
       statusCode: 200,
-      body: JSON.stringify({ message: "Outside of sending hours" }),
+      body: JSON.stringify({
+        message: "Outside of sending hours in production",
+      }),
     };
   }
 
   try {
-    const schedules = await getUpcomingSchedules();
+    const schedules = await getPastSchedules();
 
     if (schedules.length === 0) {
-      console.log("No upcoming schedules found. Exiting.");
+      console.log("No past schedules found. Exiting.");
       return {
         statusCode: 200,
-        body: JSON.stringify({ message: "No reminders to send" }),
+        body: JSON.stringify({ message: "No surveys to send" }),
       };
     }
 
     const performanceIds = [...new Set(schedules.map((s) => s.performanceId))];
     const performances = await getPerformances(performanceIds);
-    const template = await getEmailTemplate("reminder-email");
+    const template = await getEmailTemplate("survey-email");
 
     let sentCount = 0;
     let errorCount = 0;
 
     for (const schedule of schedules) {
-      const reservations = await getReservationsForSchedule(
-        schedule.performanceId,
-        schedule.id
-      );
-
       const performance = performances.find(
         (p) => p.id === schedule.performanceId
       );
 
+      if (!performance || !performance.surveyFormUrl) {
+        console.log(
+          `Skipping schedule ${schedule.id}: No performance found or no survey URL`
+        );
+        continue;
+      }
+
+      const reservations = await getConfirmedReservationsForSchedule(
+        schedule.performanceId,
+        schedule.id
+      );
+
       const emailPromises = reservations.map(async (reservation) => {
-        if (!reservation.reminderEmailSent && schedule.entryUrl) {
+        if (!reservation.surveyEmailSent) {
           try {
-            await sendReminderEmail(
-              reservation,
-              schedule,
-              performance,
-              template
-            );
-            await updateReservationReminderSent(reservation.id);
+            await sendSurveyEmail(reservation, schedule, performance, template);
+            await updateReservationSurveySent(reservation.id);
             sentCount++;
           } catch (error) {
             console.error(
-              `Error sending reminder email for reservation ${reservation.id}:`,
+              `Error sending survey email for reservation ${reservation.id}:`,
               error
             );
             errorCount++;
@@ -98,14 +100,14 @@ export const handler = async (event) => {
       await Promise.all(emailPromises);
     }
 
-    const resultMessage = `リマインドメール送信: 成功 ${sentCount}件, エラー ${errorCount}件`;
+    const resultMessage = `アンケートメール送信: 成功 ${sentCount}件, エラー ${errorCount}件`;
     console.log(resultMessage);
     if (sentCount > 0 || errorCount > 0) {
       await sendNotification(
         resultMessage,
         "INFO",
         errorCount > 0 ? "MEDIUM" : "LOW",
-        "sendReminderEmails"
+        "sendSurveyEmails"
       );
     }
     return {
@@ -113,33 +115,30 @@ export const handler = async (event) => {
       body: JSON.stringify({ message: resultMessage }),
     };
   } catch (error) {
-    console.error("リマインドメール送信エラー: ", error);
+    console.error("アンケートメール送信エラー: ", error);
     const errorMessage = error.message || JSON.stringify(error);
     await sendNotification(
-      `リマインドメール送信エラー: ${errorMessage}`,
+      `アンケートメール送信エラー: ${errorMessage}`,
       "ERROR",
       "HIGH",
-      "sendReminderEmails"
+      "sendSurveyEmails"
     );
     return {
       statusCode: 500,
       body: JSON.stringify({
-        error: "Failed to send reminder emails",
+        error: "Failed to send survey emails",
         details: errorMessage,
       }),
     };
   }
 };
 
-async function getUpcomingSchedules() {
-  const now = getJSTDate();
-  const tomorrow = getJSTDate(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+async function getPastSchedules() {
+  const yesterday = getJSTDate();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayDate = yesterday.toISOString().split("T")[0];
 
-  const today = now.toISOString().split("T")[0];
-  const tomorrowDate = tomorrow.toISOString().split("T")[0];
-
-  const todayCommand = new QueryCommand({
+  const command = new QueryCommand({
     TableName: SCHEDULES_TABLE_NAME,
     IndexName: "DateIndex",
     KeyConditionExpression: "#date = :date",
@@ -147,31 +146,16 @@ async function getUpcomingSchedules() {
       "#date": "date",
     },
     ExpressionAttributeValues: {
-      ":date": today,
+      ":date": yesterdayDate,
     },
   });
 
-  const tomorrowCommand = new QueryCommand({
-    TableName: SCHEDULES_TABLE_NAME,
-    IndexName: "DateIndex",
-    KeyConditionExpression: "#date = :date",
-    ExpressionAttributeNames: {
-      "#date": "date",
-    },
-    ExpressionAttributeValues: {
-      ":date": tomorrowDate,
-    },
-  });
-
-  const [todayResult, tomorrowResult] = await Promise.all([
-    dynamodb.send(todayCommand),
-    dynamodb.send(tomorrowCommand),
-  ]);
-
-  return [...(todayResult.Items || []), ...(tomorrowResult.Items || [])];
+  const result = await dynamodb.send(command);
+  console.log("Found schedules:", result.Items);
+  return result.Items || [];
 }
 
-async function getReservationsForSchedule(performanceId, scheduleId) {
+async function getConfirmedReservationsForSchedule(performanceId, scheduleId) {
   const command = new QueryCommand({
     TableName: RESERVATIONS_TABLE_NAME,
     IndexName: "GSI1",
@@ -188,11 +172,15 @@ async function getReservationsForSchedule(performanceId, scheduleId) {
   });
 
   const result = await dynamodb.send(command);
+  console.log(
+    `Found confirmed reservations for performance ${performanceId}, schedule ${scheduleId}:`,
+    result.Items
+  );
   return result.Items;
 }
 
-async function sendReminderEmail(reservation, schedule, performance, template) {
-  const performanceDate = getJSTDate(new Date(schedule.date));
+async function sendSurveyEmail(reservation, schedule, performance, template) {
+  const performanceDate = new Date(schedule.date);
   const dayOfWeek = ["日", "月", "火", "水", "木", "金", "土"][
     performanceDate.getDay()
   ];
@@ -204,18 +192,13 @@ async function sendReminderEmail(reservation, schedule, performance, template) {
     .replaceAll("{{name}}", reservation.name)
     .replace("{{performanceTitle}}", performance.title)
     .replace("{{performanceDateTime}}", formattedDate)
-    .replace("{{reservedSeats}}", reservation.reservedSeats)
-    .replace(
-      "{{eventPageUrl}}",
-      `${process.env.FRONTEND_URL}/events/${performance.id}`
-    )
-    .replace("{{entryUrl}}", schedule.entryUrl);
+    .replace("{{surveyFormUrl}}", performance.surveyFormUrl);
 
   const params = {
     Destination: { ToAddresses: [reservation.email] },
     Message: {
       Body: { Text: { Data: emailBody } },
-      Subject: { Data: "【ましろ小劇場】公演のご案内" },
+      Subject: { Data: "【ましろ小劇場】公演アンケートへのご協力のお願い" },
     },
     Source: SENDER_EMAIL,
   };
@@ -223,11 +206,11 @@ async function sendReminderEmail(reservation, schedule, performance, template) {
   await sesClient.send(new SendEmailCommand(params));
 }
 
-async function updateReservationReminderSent(reservationId) {
+async function updateReservationSurveySent(reservationId) {
   const command = new UpdateCommand({
     TableName: RESERVATIONS_TABLE_NAME,
     Key: { id: reservationId },
-    UpdateExpression: "SET reminderEmailSent = :sent",
+    UpdateExpression: "SET surveyEmailSent = :sent",
     ExpressionAttributeValues: {
       ":sent": true,
     },
