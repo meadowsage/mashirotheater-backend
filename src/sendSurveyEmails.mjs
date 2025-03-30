@@ -14,7 +14,9 @@ const dynamodb = DynamoDBDocumentClient.from(dynamoClient);
 const sesClient = new SESClient({ region: process.env.AWS_REGION });
 const s3Client = new S3Client({ region: process.env.AWS_REGION });
 
+// 追加: Attendeesテーブル
 const RESERVATIONS_TABLE_NAME = process.env.RESERVATIONS_TABLE_NAME;
+const ATTENDEES_TABLE_NAME = process.env.ATTENDEES_TABLE_NAME; // ← Here
 const SCHEDULES_TABLE_NAME = process.env.SCHEDULES_TABLE_NAME;
 const PERFORMANCES_TABLE_NAME = process.env.PERFORMANCES_TABLE_NAME;
 const SENDER_EMAIL = process.env.SENDER_EMAIL;
@@ -23,25 +25,25 @@ const TIME_ZONE = "Asia/Tokyo";
 const SENDING_START_HOUR = parseInt(process.env.SENDING_START_HOUR || "0", 10);
 const SENDING_END_HOUR = parseInt(process.env.SENDING_END_HOUR || "24", 10);
 
+function getJSTDate(date = new Date()) {
+  return new Date(date.toLocaleString("en-US", { timeZone: TIME_ZONE }));
+}
+
 function isWithinSendingHours() {
   const now = getJSTDate();
   const hour = now.getHours();
   return hour >= SENDING_START_HOUR && hour < SENDING_END_HOUR;
 }
 
-function getJSTDate(date = new Date()) {
-  return new Date(date.toLocaleString("en-US", { timeZone: TIME_ZONE }));
-}
-
 export const handler = async (event) => {
   console.log("Starting sendSurveyEmails function");
 
   if (!isWithinSendingHours()) {
-    console.log("Outside of sending hours in production. Exiting.");
+    console.log("Outside of sending hours. Exiting.");
     return {
       statusCode: 200,
       body: JSON.stringify({
-        message: "Outside of sending hours in production",
+        message: "Outside of sending hours",
       }),
     };
   }
@@ -69,6 +71,7 @@ export const handler = async (event) => {
         (p) => p.id === schedule.performanceId
       );
 
+      // 公演に surveyFormUrl が無ければスキップ
       if (!performance || !performance.surveyFormUrl) {
         console.log(
           `Skipping schedule ${schedule.id}: No performance found or no survey URL`
@@ -84,6 +87,13 @@ export const handler = async (event) => {
       const emailPromises = reservations.map(async (reservation) => {
         if (!reservation.surveyEmailSent) {
           try {
+            // 代表者が参加済(checkedIn)かどうか判定
+            const checkedIn = await isRepresentativeCheckedIn(reservation);
+            if (!checkedIn) {
+              // 代表者がチェックインしていない → アンケート送信しない
+              return;
+            }
+
             await sendSurveyEmail(reservation, schedule, performance, template);
             await updateReservationSurveySent(reservation.id);
             sentCount++;
@@ -133,6 +143,7 @@ export const handler = async (event) => {
   }
 };
 
+/** 1日前のスケジュールを取得 (Index: DateIndex) */
 async function getPastSchedules() {
   const yesterday = getJSTDate();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -155,6 +166,7 @@ async function getPastSchedules() {
   return result.Items || [];
 }
 
+/** スケジュールの confirmed 予約を取得 */
 async function getConfirmedReservationsForSchedule(performanceId, scheduleId) {
   const command = new QueryCommand({
     TableName: RESERVATIONS_TABLE_NAME,
@@ -179,6 +191,30 @@ async function getConfirmedReservationsForSchedule(performanceId, scheduleId) {
   return result.Items;
 }
 
+/** 代表者がcheckedIn=true か判定 */
+async function isRepresentativeCheckedIn(reservation) {
+  // occupant i=0 は attendee.name === reservation.name とする想定
+  const command = new QueryCommand({
+    TableName: ATTENDEES_TABLE_NAME,
+    IndexName: "ReservationIdIndex",
+    KeyConditionExpression: "reservationId = :rid",
+    ExpressionAttributeValues: {
+      ":rid": reservation.id,
+    },
+  });
+  const res = await dynamodb.send(command);
+  const attendees = res.Items || [];
+
+  const mainAttendee = attendees.find((att) => att.name === reservation.name);
+  if (!mainAttendee) {
+    // occupant i=0 not found => false
+    return false;
+  }
+
+  return mainAttendee.checkedIn === true;
+}
+
+/** Surveyメール送信 */
 async function sendSurveyEmail(reservation, schedule, performance, template) {
   const performanceDate = new Date(schedule.date);
   const dayOfWeek = ["日", "月", "火", "水", "木", "金", "土"][
@@ -206,6 +242,7 @@ async function sendSurveyEmail(reservation, schedule, performance, template) {
   await sesClient.send(new SendEmailCommand(params));
 }
 
+/** reservation.surveyEmailSent=true に更新 */
 async function updateReservationSurveySent(reservationId) {
   const command = new UpdateCommand({
     TableName: RESERVATIONS_TABLE_NAME,
@@ -219,12 +256,12 @@ async function updateReservationSurveySent(reservationId) {
   await dynamodb.send(command);
 }
 
+/** メールテンプレート読み込み */
 async function getEmailTemplate(templateName) {
   const command = new GetObjectCommand({
     Bucket: TEMPLATE_BUCKET,
     Key: `email-templates/${templateName}.txt`,
   });
-
   const response = await s3Client.send(command);
   return streamToString(response.Body);
 }
@@ -238,6 +275,7 @@ function streamToString(stream) {
   });
 }
 
+/** Performancesをまとめて取得 */
 async function getPerformances(performanceIds) {
   const command = new BatchGetCommand({
     RequestItems: {
